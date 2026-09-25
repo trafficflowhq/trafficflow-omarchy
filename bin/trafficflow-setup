@@ -48,7 +48,10 @@ o.window({ class = "$(lua_class)" }, {
   float = true,
   pin = true,
   size = { 344, 560 },
-  move = { "(monitor_w-window_w-12)", "48" },
+  -- 344 literally, not window_w: Hyprland evaluates `move` against the window's
+  -- size BEFORE `size` above applies (Chromium's ~945px default), which lands
+  -- the popover mid-screen. The width is fixed, so say so.
+  move = { "(monitor_w-344-12)", "48" },
 })
 o.bind("$KEY", "TrafficFlow tracker", "$BIN/trafficflow-summon")
 $END
