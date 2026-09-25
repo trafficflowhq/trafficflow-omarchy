@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+# The compact tracker, like the Mac menubar popover: focus it if it is open,
+# open it if not. It is the web app's /compact view in a Chromium app window
+# (omarchy-launch-webapp), floated and sized by the window rule that
+# `trafficflow-setup install` writes.
+#
+#   trafficflow-summon         the compact tracker
+#   trafficflow-summon --app   the full app instead
+#
+# Focus goes by the window's exact class, not Omarchy's word-boundary pattern
+# helper: the compact popover and the full app share a prefix, and a loose
+# match would focus whichever came first.
+
+set -uo pipefail
+
+BASE="${TRAFFICFLOW_URL:-https://tracking.trafficflow.ch}"
+HOST="${BASE#*://}"; HOST="${HOST%%/*}"
+
+path="/compact"
+[[ ${1:-} == "--app" ]] && path=""
+
+# Chromium names an app window `chrome-<host>__<path>-Default`; the path keeps
+# its slashes but drops the leading one. The full app opens "/" → no path.
+class="chrome-${HOST}__${path#/}-Default"
+
+if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  address=$(hyprctl clients -j | jq -r --arg c "$class" '.[] | select(.class == $c) | .address' | head -n1)
+  if [[ -n $address ]]; then
+    # Hyprland 0.56 (Lua config) takes dispatchers as Lua; older releases take
+    # the classic form. Same fallback Omarchy's own launch-or-focus uses.
+    hyprctl dispatch "hl.dsp.focus({ window = \"address:$address\" })" >/dev/null 2>&1 \
+      || hyprctl dispatch focuswindow "address:$address" >/dev/null 2>&1
+    exit 0
+  fi
+fi
+
+if ! command -v omarchy-launch-webapp >/dev/null 2>&1; then
+  command -v notify-send >/dev/null 2>&1 && notify-send "TrafficFlow" "omarchy-launch-webapp not found — is this Omarchy?"
+  echo "trafficflow-summon: omarchy-launch-webapp not on PATH" >&2
+  exit 1
+fi
+
+omarchy-launch-webapp "${BASE%/}${path}" >/dev/null 2>&1 < /dev/null &
+exit 0

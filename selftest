@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# Prove the plugin is well-formed without needing Omarchy: the manifest, every
+# script, the status/toggle contract in its demo and failure modes, and the
+# setup script's install/remove round trip on a throwaway config. Run it from
+# anywhere; it needs bash, jq and curl.
+
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+
+pass=0; failed=0
+ok()  { echo "  ok    $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; failed=$((failed + 1)); }
+check() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+export XDG_CONFIG_HOME="$T" TRAFFICFLOW_NO_RELOAD=1
+unset TRAFFICFLOW_TOKEN
+
+echo "trafficflow-omarchy selftest"
+for tool in jq curl; do
+  command -v "$tool" >/dev/null 2>&1 || { bad "$tool is installed"; echo; echo "$pass passed, $failed failed"; exit 1; }
+done
+
+check "manifest.json is JSON with the expected id and kind" \
+  "jq -e '.id == \"trafficflow.tracker\" and .schemaVersion == 1 and (.kinds | index(\"bar-widget\")) != null and .entryPoints.barWidget == \"BarWidget.qml\"' manifest.json"
+check "the entry point exists" "test -f BarWidget.qml"
+check "BarWidget.qml declares the IPC target the scripts and README name" "grep -q 'target: \"trafficflow.tracker\"' BarWidget.qml"
+for s in bin/*; do
+  check "$s is executable and parses" "test -x '$s' && bash -n '$s'"
+done
+
+check "status --demo running: state ok with a running block" \
+  "bin/trafficflow-status --demo running | jq -e '.state == \"ok\" and (.today_base_seconds | type) == \"number\" and .running.task_name != null and .running.started_at != null'"
+check "status --demo idle: state ok, running null" \
+  "bin/trafficflow-status --demo idle | jq -e '.state == \"ok\" and .running == null'"
+check "status without a token answers unknown/no-token, never a number" \
+  "bin/trafficflow-status | jq -e '.state == \"unknown\" and .code == \"no-token\" and (.today_base_seconds == null)'"
+check "status against an unreachable host answers unknown/offline" \
+  "TRAFFICFLOW_TOKEN=tf_$(printf 'a%.0s' $(seq 43)) bin/trafficflow-status --base http://127.0.0.1:9 | jq -e '.state == \"unknown\" and .code == \"offline\"'"
+check "toggle without a token answers unknown/no-token" \
+  "bin/trafficflow-toggle | jq -e '.state == \"unknown\" and .code == \"no-token\"'"
+
+mkdir -p "$T/hypr"; printf -- '-- mine\n' > "$T/hypr/bindings.lua"
+check "setup print shows the window rule and the SUPER+SHIFT+T bind" \
+  "bin/trafficflow-setup print | grep -q 'o.window({ class = \"^chrome-tracking' && bin/trafficflow-setup print | grep -q 'o.bind(\"SUPER + SHIFT + T\"'"
+check "setup install adds the block once, even when run twice" \
+  "bin/trafficflow-setup install && bin/trafficflow-setup install && [ \"\$(grep -c 'trafficflow plugin: begin' '$T/hypr/bindings.lua')\" = 1 ]"
+check "setup remove leaves the file as it was" \
+  "bin/trafficflow-setup remove && [ \"\$(cat '$T/hypr/bindings.lua')\" = '-- mine' ]"
+check "setup token rejects something that is not a token" \
+  "! (echo junk | bin/trafficflow-setup token) && ! test -e '$T/trafficflow/token'"
+check "setup token stores a well-formed token with mode 600" \
+  "echo tf_$(printf 'b%.0s' $(seq 43)) | bin/trafficflow-setup token >/dev/null 2>&1; test -f '$T/trafficflow/token' && [ \"\$(stat -c %a '$T/trafficflow/token')\" = 600 ]"
+check "setup status runs" "bin/trafficflow-setup status"
+
+if command -v omarchy >/dev/null 2>&1; then
+  check "omarchy plugin validate accepts the folder" "omarchy plugin validate ."
+fi
+
+echo
+echo "$pass passed, $failed failed"
+[ "$failed" = 0 ]

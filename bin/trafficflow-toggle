@@ -1,0 +1,55 @@
+#!/bin/bash
+#
+# Start/stop the timer — the same thing the wave click does on the macOS app:
+# stop the running timer, or resume the most recent entry of today if nothing
+# runs. Prints the resulting timer state as JSON (same shape as
+# trafficflow-status), or {"state":"unknown","code":"…","why":"…"}.
+#
+# A 409 means there is nothing to resume yet today — the widget answers that by
+# opening the compact tracker so you can pick a task, like the Mac app does.
+
+set -uo pipefail
+
+BASE="${TRAFFICFLOW_URL:-https://tracking.trafficflow.ch}"
+TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/trafficflow/token"
+
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//[$'\001'-$'\037']/ }"
+  printf '%s' "$s"
+}
+unknown() { printf '{"state":"unknown","code":"%s","why":"%s"}\n' "$1" "$(json_escape "$2")"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+for tool in curl jq; do
+  command -v "$tool" >/dev/null 2>&1 || { unknown "no-$tool" "$tool is not installed"; exit 0; }
+done
+
+token="${TRAFFICFLOW_TOKEN:-}"
+if [[ -z $token && -r $TOKEN_FILE ]]; then
+  token=$(tr -d '[:space:]' < "$TOKEN_FILE")
+fi
+[[ -n $token ]] || { unknown "no-token" "no token — run: trafficflow-setup token"; exit 0; }
+
+out=$(curl -sS -m 12 -o - -w '\n%{http_code}' -X POST \
+  -H "Authorization: Bearer $token" -H "Accept: application/json" -H "Content-Length: 0" \
+  "${BASE%/}/api/v1/timer/toggle" 2>/dev/null) || { unknown "offline" "cannot reach ${BASE#https://}"; exit 0; }
+code="${out##*$'\n'}"
+body="${out%$'\n'*}"
+
+case "$code" in
+  200) printf '%s' "$body" | jq -c '{state:"ok", date, today_base_seconds, running}' 2>/dev/null \
+         || unknown "bad-json" "the API did not answer JSON" ;;
+  401) unknown "token-rejected" "token rejected — create a new one in Settings" ;;
+  403) unknown "no-scope" "this token cannot start/stop timers — create one with start/stop enabled" ;;
+  409) unknown "nothing-to-resume" "nothing to resume today — pick a task in the tracker" ;;
+  *)   unknown "http-$code" "API answered HTTP $code" ;;
+esac

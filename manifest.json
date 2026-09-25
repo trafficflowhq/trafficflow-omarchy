@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "trafficflow.tracker",
+  "name": "TrafficFlow Tracking",
+  "version": "0.1.0",
+  "author": "TrafficFlow GmbH",
+  "description": "Running timer and today's hours in the bar; press to open the tracker",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "TrafficFlow",
+    "description": "Running timer and today's hours. Left: compact tracker. Right: start/stop. Middle: full app.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "baseUrl": "https://tracking.trafficflow.ch",
+      "runningIntervalMs": 60000
+    },
+    "schema": [
+      {
+        "key": "baseUrl",
+        "type": "string",
+        "label": "TrafficFlow URL"
+      },
+      {
+        "key": "runningIntervalMs",
+        "type": "number",
+        "label": "Poll interval while a timer runs (ms)"
+      }
+    ]
+  }
+}

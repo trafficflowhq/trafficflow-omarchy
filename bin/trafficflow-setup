@@ -1,0 +1,147 @@
+#!/bin/bash
+#
+# One-time setup for the TrafficFlow bar widget.
+#
+#   trafficflow-setup token            paste your personal API token (kept in
+#                                      ~/.config/trafficflow/token, mode 600)
+#   trafficflow-setup install          window rule + SUPER+SHIFT+T summon key
+#                                      in ~/.config/hypr/bindings.lua
+#   trafficflow-setup remove           take the rule and key back out
+#   trafficflow-setup print            show the block, to paste it yourself
+#   trafficflow-setup status           what is set up, and is the API reachable
+#
+# ── WHY IT EDITS bindings.lua AND NOT THE DEFAULTS ────────────────────────────
+# ~/.config/hypr/bindings.lua is loaded after Omarchy's own rules and survives
+# Omarchy updates. The block is idempotent by its marker lines and removed as
+# a whole, so a reinstall never doubles a key or a rule.
+
+set -uo pipefail
+
+BASE="${TRAFFICFLOW_URL:-https://tracking.trafficflow.ch}"
+HOST="${BASE#*://}"; HOST="${HOST%%/*}"
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+TOKEN_FILE="$CONFIG/trafficflow/token"
+BINDINGS="$CONFIG/hypr/bindings.lua"
+BEGIN="-- trafficflow plugin: begin"
+END="-- trafficflow plugin: end"
+KEY="SUPER + SHIFT + T"
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+fail() { echo "trafficflow-setup: $*" >&2; exit 1; }
+
+# Hyprland's class regex for the compact window, with the dots escaped and
+# then escaped again for the Lua string literal.
+lua_class() {
+  local c="chrome-${HOST}__compact-Default"
+  printf '^%s$' "${c//./\\\\.}"
+}
+
+block() {
+  cat <<LUA
+$BEGIN
+-- The compact tracker (the web app's /compact view as a Chromium app window)
+-- as a floating popover under the bar, like the Mac menubar app: pinned to
+-- every workspace, the popover's size, top-right. Remove with:
+--   $BIN/trafficflow-setup remove
+o.window({ class = "$(lua_class)" }, {
+  tag = "-chromium-based-browser",
+  float = true,
+  pin = true,
+  size = { 344, 560 },
+  move = { "(monitor_w-window_w-12)", "48" },
+})
+o.bind("$KEY", "TrafficFlow tracker", "$BIN/trafficflow-summon")
+$END
+LUA
+}
+
+reload() {
+  # The selftest edits a throwaway config and must not touch a live session.
+  [[ -n ${TRAFFICFLOW_NO_RELOAD:-} ]] && return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  hyprctl reload >/dev/null 2>&1 && echo "hyprland reloaded"
+}
+
+shell_refresh() {
+  command -v omarchy-shell >/dev/null 2>&1 || return 0
+  omarchy-shell trafficflow.tracker refresh >/dev/null 2>&1 || true
+}
+
+case "${1:-status}" in
+  print)
+    block
+    ;;
+
+  install)
+    [[ -f $BINDINGS ]] || fail "no $BINDINGS — is this Omarchy?"
+    # `-e`: the marker starts with `--`, which grep would read as its own option.
+    if grep -qF -e "$BEGIN" -- "$BINDINGS"; then
+      echo "already installed in $BINDINGS — run 'remove' first to change it"
+      exit 0
+    fi
+    if ! printf '\n%s\n' "$(block)" >> "$BINDINGS"; then
+      fail "could not write to $BINDINGS — nothing was added"
+    fi
+    echo "added to $BINDINGS:"
+    block
+    reload && echo "$KEY summons the tracker"
+    ;;
+
+  remove)
+    [[ -f $BINDINGS ]] || exit 0
+    if ! grep -qF -e "$BEGIN" -- "$BINDINGS"; then
+      echo "nothing to remove in $BINDINGS"
+      exit 0
+    fi
+    # The whole marked block, so a partial edit cannot leave an orphan marker.
+    sed -i "\|^${BEGIN}\$|,\|^${END}\$|d" "$BINDINGS"
+    echo "removed from $BINDINGS"
+    reload
+    ;;
+
+  token)
+    token="${2:-}"
+    if [[ -z $token ]]; then
+      if [[ -t 0 ]]; then
+        read -rsp "Paste your TrafficFlow API token (tf_…): " token; echo
+      else
+        read -r token
+      fi
+    fi
+    token="${token//[[:space:]]/}"
+    [[ $token =~ ^tf_[A-Za-z0-9_-]{43}$ ]] || fail "that does not look like a TrafficFlow token (tf_ + 43 characters)"
+    mkdir -p "$(dirname "$TOKEN_FILE")" && chmod 700 "$(dirname "$TOKEN_FILE")"
+    (umask 077 && printf '%s\n' "$token" > "$TOKEN_FILE") || fail "could not write $TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo "saved to $TOKEN_FILE"
+    answer=$("$BIN/trafficflow-status" --base "$BASE")
+    if [[ $(printf '%s' "$answer" | jq -r .state 2>/dev/null) == "ok" ]]; then
+      echo "connected: $(printf '%s' "$answer" | jq -r '"\(.today_base_seconds / 3600 * 100 | round / 100)h stored today" + (if .running then ", timer running" else "" end)')"
+    else
+      echo "saved, but the API did not accept it: $(printf '%s' "$answer" | jq -r .why 2>/dev/null)" >&2
+    fi
+    shell_refresh
+    ;;
+
+  status)
+    if [[ -r $TOKEN_FILE ]]; then echo "token:   $TOKEN_FILE"; else echo "token:   none — run: trafficflow-setup token"; fi
+    if [[ -f $BINDINGS ]] && grep -qF -e "$BEGIN" -- "$BINDINGS"; then
+      echo "hypr:    window rule + $KEY installed in $BINDINGS"
+    else
+      echo "hypr:    not installed — run: trafficflow-setup install"
+    fi
+    if command -v omarchy >/dev/null 2>&1; then
+      if omarchy plugin list --json 2>/dev/null | grep -q '"trafficflow.tracker"'; then
+        echo "plugin:  trafficflow.tracker is known to Omarchy"
+      else
+        echo "plugin:  not listed — omarchy plugin add <repo-url> --enable --yes"
+      fi
+    fi
+    echo "api:     $("$BIN/trafficflow-status" --base "$BASE")"
+    ;;
+
+  *)
+    sed -n '3,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# Print the current timer state as one line of JSON, for the bar widget:
+#
+#   {"state":"ok","date":"2026-09-25","today_base_seconds":12345,
+#    "running":{"entry_id":9,"started_at":"…","base_seconds":600,
+#               "project_code":"KN","project_name":"kingnature","task_name":"Dev"}}
+#   {"state":"ok",…,"running":null}                  signed in, nothing running
+#   {"state":"unknown","why":"…","code":"no-token"}  nothing to show, and why
+#
+# The token is a personal API token from Settings → Personal API access. It
+# is read from $TRAFFICFLOW_TOKEN, else from $XDG_CONFIG_HOME/trafficflow/token
+# (mode 600, written by `trafficflow-setup token`). It never appears in argv.
+#
+#   trafficflow-status --demo running|idle   fixed data, no network — for
+#                                            screenshots and the selftest
+
+set -uo pipefail
+
+BASE="${TRAFFICFLOW_URL:-https://tracking.trafficflow.ch}"
+TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/trafficflow/token"
+
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//[$'\001'-$'\037']/ }"
+  printf '%s' "$s"
+}
+unknown() { printf '{"state":"unknown","code":"%s","why":"%s"}\n' "$1" "$(json_escape "$2")"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2 ;;
+    --demo)
+      now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+      today=$(date +%Y-%m-%d)
+      case "${2:-idle}" in
+        running)
+          printf '{"state":"ok","date":"%s","today_base_seconds":9300,"running":{"entry_id":1,"started_at":"%s","base_seconds":1500,"project_code":"TF","project_name":"TrafficFlow","task_name":"Omarchy plugin"}}\n' "$today" "$now"
+          ;;
+        *)
+          printf '{"state":"ok","date":"%s","today_base_seconds":16200,"running":null}\n' "$today"
+          ;;
+      esac
+      exit 0
+      ;;
+    *) shift ;;
+  esac
+done
+
+for tool in curl jq; do
+  command -v "$tool" >/dev/null 2>&1 || { unknown "no-$tool" "$tool is not installed"; exit 0; }
+done
+
+token="${TRAFFICFLOW_TOKEN:-}"
+if [[ -z $token && -r $TOKEN_FILE ]]; then
+  token=$(tr -d '[:space:]' < "$TOKEN_FILE")
+fi
+if [[ -z $token ]]; then
+  unknown "no-token" "no token — run: trafficflow-setup token"
+  exit 0
+fi
+
+# Body and status in one request; the status line is the last line of output.
+out=$(curl -sS -m 12 -o - -w '\n%{http_code}' \
+  -H "Authorization: Bearer $token" -H "Accept: application/json" \
+  "${BASE%/}/api/v1/timer" 2>/dev/null) || { unknown "offline" "cannot reach ${BASE#https://}"; exit 0; }
+code="${out##*$'\n'}"
+body="${out%$'\n'*}"
+
+case "$code" in
+  200)
+    # Only the fields the widget renders survive; anything else the API might
+    # grow later is dropped here rather than forwarded blindly.
+    printf '%s' "$body" | jq -c '{state:"ok", date, today_base_seconds, running}' 2>/dev/null \
+      || unknown "bad-json" "the API did not answer JSON"
+    ;;
+  401) unknown "token-rejected" "token rejected — create a new one in Settings" ;;
+  403) unknown "no-scope" "token lacks the timer scope — create a new one with start/stop" ;;
+  *)   unknown "http-$code" "API answered HTTP $code" ;;
+esac
