@@ -41,13 +41,13 @@ check "status against an unreachable host answers unknown/offline" \
 check "toggle without a token answers unknown/no-token" \
   "bin/trafficflow-toggle | jq -e '.state == \"unknown\" and .code == \"no-token\"'"
 
-mkdir -p "$T/hypr"; printf -- '-- mine\n' > "$T/hypr/bindings.lua"
+mkdir -p "$T/hypr"; printf -- '-- mine\n' > "$T/hypr/bindings.lua"; cp "$T/hypr/bindings.lua" "$T/bindings.before"
 check "setup print shows the window rule and the SUPER+SHIFT+T bind" \
   "bin/trafficflow-setup print | grep -q 'o.window({ class = \"^chrome-tracking' && bin/trafficflow-setup print | grep -q 'o.bind(\"SUPER + SHIFT + T\"'"
 check "setup install adds the block once, even when run twice" \
   "bin/trafficflow-setup install && bin/trafficflow-setup install && [ \"\$(grep -c 'trafficflow plugin: begin' '$T/hypr/bindings.lua')\" = 1 ]"
-check "setup remove leaves the file as it was" \
-  "bin/trafficflow-setup remove && [ \"\$(cat '$T/hypr/bindings.lua')\" = '-- mine' ]"
+check "setup remove leaves the file byte-for-byte as it was" \
+  "bin/trafficflow-setup remove && cmp -s '$T/bindings.before' '$T/hypr/bindings.lua'"
 check "setup token rejects something that is not a token" \
   "! (echo junk | bin/trafficflow-setup token) && ! test -e '$T/trafficflow/token'"
 check "setup token stores a well-formed token with mode 600" \

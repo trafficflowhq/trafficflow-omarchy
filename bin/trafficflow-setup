@@ -96,8 +96,21 @@ case "${1:-status}" in
       echo "nothing to remove in $BINDINGS"
       exit 0
     fi
-    # The whole marked block, so a partial edit cannot leave an orphan marker.
-    sed -i "\|^${BEGIN}\$|,\|^${END}\$|d" "$BINDINGS"
+    # The whole marked block AND the blank line install put before it, so the
+    # file ends up byte-for-byte as it was — a remove/install cycle must not
+    # grow the file by a blank line each time. A partial edit can never leave
+    # an orphan marker either.
+    awk -v b="$BEGIN" -v e="$END" '
+      { line[NR] = $0 }
+      END {
+        skip = 0; n = 0
+        for (i = 1; i <= NR; i++) {
+          if (line[i] == b) { skip = 1; if (n > 0 && out[n] == "") n-- }
+          if (!skip) out[++n] = line[i]
+          if (line[i] == e) skip = 0
+        }
+        for (i = 1; i <= n; i++) print out[i]
+      }' "$BINDINGS" > "$BINDINGS.tf-tmp" && mv "$BINDINGS.tf-tmp" "$BINDINGS"
     echo "removed from $BINDINGS"
     reload
     ;;
